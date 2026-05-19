@@ -9,6 +9,34 @@ use std::fmt::Formatter;
 use std::arch::aarch64::*;
 #[cfg(target_arch = "loongarch64")]
 use std::arch::loongarch64::*;
+#[cfg(target_arch = "powerpc64")]
+use std::arch::powerpc64::*;
+use std::mem::transmute;
+#[cfg(target_arch = "powerpc64")]
+#[inline(always)]
+unsafe fn power10_f32_min(a: vector_float, b: vector_float) -> vector_float {
+    let mut mask: vector_float;
+    std::arch::asm!(
+        "xvcmpgtsp {0}, {1}, {2}",
+        out(vsreg) mask,
+        in(vsreg) b,
+        in(vsreg) a
+    );
+    vec_sel(b, a, std::mem::transmute::<vector_float, vector_unsigned_int>(mask))
+}
+#[inline]
+#[target_feature(enable = "altivec")]
+unsafe fn powerpc_f32_cmpeq(a: vector_float, b: vector_float) -> vector_unsigned_int {
+    let mut res: vector_unsigned_int;
+    std::arch::asm!(
+        "xvcmpeqsp {0}, {1}, {2}",
+        out(vsreg) res,
+        in(vsreg) a,
+        in(vsreg) b
+    );
+    res
+}
+
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 #[cfg(target_arch = "loongarch64")]
@@ -34,6 +62,12 @@ pub struct f32x8(float32x4x2_t);
 #[cfg(target_arch = "loongarch64")]
 #[derive(Clone, Copy)]
 pub struct f32x8(v8f32);
+
+/// 8 of 32-bit `f32` values.
+#[allow(non_camel_case_types)]
+#[cfg(any(target_arch = "powerpc64"))]
+#[derive(Clone, Copy)]
+pub struct f32x8(pub vector_float, pub vector_float);
 
 impl std::fmt::Debug for f32x8 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -91,6 +125,22 @@ impl f32x8 {
             ];
             Self::load_unaligned(values.as_ptr())
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            // PowerPC does not have a native gather instruction for f32x8.
+            let ptr = slice.as_ptr();
+            let values = [
+                *ptr.add(indices[0] as usize),
+                *ptr.add(indices[1] as usize),
+                *ptr.add(indices[2] as usize),
+                *ptr.add(indices[3] as usize),
+                *ptr.add(indices[4] as usize),
+                *ptr.add(indices[5] as usize),
+                *ptr.add(indices[6] as usize),
+                *ptr.add(indices[7] as usize),
+            ];
+            Self::load_unaligned(values.as_ptr())
+        }
     }
 }
 
@@ -120,6 +170,10 @@ impl SIMD<f32, 8> for f32x8 {
         unsafe {
             Self(transmute(lasx_xvreplgr2vr_w(transmute(val))))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(vec_splats(val), vec_splats(val))
+        }
     }
 
     fn zeros() -> Self {
@@ -132,6 +186,10 @@ impl SIMD<f32, 8> for f32x8 {
             Self::splat(0.0)
         }
         #[cfg(target_arch = "loongarch64")]
+        {
+            Self::splat(0.0)
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
         {
             Self::splat(0.0)
         }
@@ -151,6 +209,10 @@ impl SIMD<f32, 8> for f32x8 {
         {
             Self(transmute(lasx_xvld::<0>(transmute(ptr))))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        {
+            Self::load_unaligned(ptr)
+        }
     }
 
     #[inline]
@@ -167,6 +229,10 @@ impl SIMD<f32, 8> for f32x8 {
         {
             Self(transmute(lasx_xvld::<0>(transmute(ptr))))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        {
+            Self(vec_xl(0, ptr), vec_xl(16, ptr))
+        }
     }
 
     unsafe fn store(&self, ptr: *mut f32) {
@@ -182,6 +248,10 @@ impl SIMD<f32, 8> for f32x8 {
         unsafe {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.store_unaligned(ptr);
+        }
     }
 
     unsafe fn store_unaligned(&self, ptr: *mut f32) {
@@ -196,6 +266,11 @@ impl SIMD<f32, 8> for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            vec_xst(self.0, 0, ptr);
+            vec_xst(self.1, 16, ptr);
         }
     }
 
@@ -224,6 +299,14 @@ impl SIMD<f32, 8> for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         {
             self.as_array().iter().sum()
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            let sum_vec = vec_add(self.0, self.1);
+            // Horizontal add across the 4 lanes of the resulting vector
+            let mut res = [0.0f32; 4];
+            vec_xst(sum_vec, 0, res.as_mut_ptr());
+            res.iter().sum()
         }
     }
 
@@ -259,6 +342,32 @@ impl SIMD<f32, 8> for f32x8 {
             let m2 = lasx_xvfmin_s(transmute(m1), transmute(m2));
             transmute(lasx_xvpickve2gr_w::<0>(transmute(m2)))
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            // Step 1: Compare the two halves of f32x8 to get a single vector_float
+            let v = power10_f32_min(self.0, self.1);
+
+            // Step 2: Horizontal reduction using the ASM you just verified
+            let mut v_shift8: vector_float;
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 2",
+                out(vsreg) v_shift8,
+                in(vsreg) v
+            );
+            let v_min2 = power10_f32_min(v, v_shift8);
+
+            let mut v_shift4: vector_float;
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 1",
+                out(vsreg) v_shift4,
+                in(vsreg) v_min2
+            );
+            let v_min1 = power10_f32_min(v_min2, v_shift4);
+
+            // Step 3: Extract the result from the first lane
+            let res: [f32; 4] = std::mem::transmute(v_min1);
+            res[0]
+        }
     }
 
     fn min(&self, rhs: &Self) -> Self {
@@ -276,6 +385,13 @@ impl SIMD<f32, 8> for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmin_s(self.0, rhs.0))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(
+                power10_f32_min(self.0, rhs.0),
+                power10_f32_min(self.1, rhs.1),
+            )
         }
     }
 
@@ -310,6 +426,14 @@ impl SIMD<f32, 8> for f32x8 {
                 }
             }
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            for i in 0..8 {
+                if self.as_array().get_unchecked(i) == &val {
+                    return Some(i as i32);
+                }
+            }
+        }
         None
     }
 }
@@ -328,6 +452,11 @@ impl FloatSimd<f32, 8> for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             self.0 = lasx_xvfmadd_s(a.0, b.0, self.0);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_madd(a.0, b.0, self.0);
+            self.1 = vec_madd(a.1, b.1, self.1);
         }
     }
 }
@@ -352,6 +481,13 @@ impl Add for f32x8 {
         unsafe {
             Self(lasx_xvfadd_s(self.0, rhs.0))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_add(self.0, rhs.0),
+                vec_add(self.1, rhs.1),
+            )
+        }
     }
 }
 
@@ -370,6 +506,11 @@ impl AddAssign for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             self.0 = lasx_xvfadd_s(self.0, rhs.0);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_add(self.0, rhs.0);
+            self.1 = vec_add(self.1, rhs.1);
         }
     }
 }
@@ -394,6 +535,13 @@ impl Sub for f32x8 {
         unsafe {
             Self(lasx_xvfsub_s(self.0, rhs.0))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_sub(self.0, rhs.0),
+                vec_sub(self.1, rhs.1),
+            )
+        }
     }
 }
 
@@ -412,6 +560,11 @@ impl SubAssign for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             self.0 = lasx_xvfsub_s(self.0, rhs.0);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_sub(self.0, rhs.0);
+            self.1 = vec_sub(self.1, rhs.1);
         }
     }
 }
@@ -435,6 +588,13 @@ impl Mul for f32x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmul_s(self.0, rhs.0))
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_mul(self.0, rhs.0),
+                vec_mul(self.1, rhs.1),
+            )
         }
     }
 }
@@ -460,6 +620,11 @@ pub struct f32x16(float32x4x4_t);
 #[cfg(target_arch = "loongarch64")]
 #[derive(Clone, Copy)]
 pub struct f32x16(v8f32, v8f32);
+
+#[allow(non_camel_case_types)]
+#[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+#[derive(Clone, Copy)]
+pub struct f32x16(pub(crate) vector_float, pub(crate) vector_float, pub(crate) vector_float, pub(crate) vector_float);
 
 impl std::fmt::Debug for f32x16 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -510,6 +675,11 @@ impl SIMD<f32, 16> for f32x16 {
                 transmute(lasx_xvreplgr2vr_w(transmute(val))),
             )
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            let v = vec_splats(val);
+            Self(v, v, v, v)
+        }
     }
 
     #[inline]
@@ -527,6 +697,10 @@ impl SIMD<f32, 16> for f32x16 {
             Self::splat(0.0)
         }
         #[cfg(target_arch = "loongarch64")]
+        {
+            Self::splat(0.0)
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
         {
             Self::splat(0.0)
         }
@@ -553,6 +727,15 @@ impl SIMD<f32, 16> for f32x16 {
                 transmute(lasx_xvld::<32>(transmute(ptr))),
             )
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_xl(0, ptr),
+                vec_xl(16, ptr),
+                vec_xl(32, ptr),
+                vec_xl(48, ptr),
+            )
+        }
     }
 
     #[inline]
@@ -574,6 +757,15 @@ impl SIMD<f32, 16> for f32x16 {
             Self(
                 transmute(lasx_xvld::<0>(transmute(ptr))),
                 transmute(lasx_xvld::<32>(transmute(ptr))),
+            )
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_xl(0, ptr),
+                vec_xl(16, ptr),
+                vec_xl(32, ptr),
+                vec_xl(48, ptr),
             )
         }
     }
@@ -598,6 +790,13 @@ impl SIMD<f32, 16> for f32x16 {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
             lasx_xvst::<32>(transmute(self.1), transmute(ptr));
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            vec_xst(self.0, 0, ptr);
+            vec_xst(self.1, 16, ptr);
+            vec_xst(self.2, 32, ptr);
+            vec_xst(self.3, 48, ptr);
+        }
     }
 
     #[inline]
@@ -619,6 +818,13 @@ impl SIMD<f32, 16> for f32x16 {
         {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
             lasx_xvst::<32>(transmute(self.1), transmute(ptr));
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            vec_xst(self.0, 0, ptr);
+            vec_xst(self.1, 16, ptr);
+            vec_xst(self.2, 32, ptr);
+            vec_xst(self.3, 48, ptr);
         }
     }
 
@@ -652,6 +858,31 @@ impl SIMD<f32, 16> for f32x16 {
         #[cfg(target_arch = "loongarch64")]
         {
             self.as_array().iter().sum()
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            // 1. Sum the two internal vectors of f32x8
+            let sum = vec_add(self.0, self.1);
+            // 2. Horizontal add of the 4 lanes in the resulting vector
+            let mut shift8: vector_float;
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 2",
+                out(vsreg) shift8,
+                in(vsreg) sum
+            );
+            let v_sum = vec_add(sum, shift8);
+
+            let mut shift4: vector_float;
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 1",
+                out(vsreg) shift4,
+                in(vsreg) v_sum
+            );
+            let v_sum_final = vec_add(v_sum, shift4);
+
+            // 3. Extract the first lane (the total sum)
+            let res: [f32; 4] = std::mem::transmute(v_sum_final);
+            res[0]
         }
     }
 
@@ -691,6 +922,33 @@ impl SIMD<f32, 16> for f32x16 {
             let m1 = lasx_xvfmin_s(transmute(m1), transmute(m2));
             transmute(lasx_xvpickve2gr_w::<0>(transmute(m1)))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            let m1 = power10_f32_min(self.0, self.1);
+            let m2 = power10_f32_min(self.2, self.3);
+            let m = power10_f32_min(m1, m2);
+            // 1. Shift by 8 bytes (2 words)
+            let mut m_shift8: vector_float; // Declaration
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 2",
+                out(vsreg) m_shift8,
+                in(vsreg) m
+            );
+            let v_min = power10_f32_min(m, m_shift8);
+
+            // 2. Shift by 4 bytes (1 word)
+            let mut v_shift4: vector_float; // Declaration
+            std::arch::asm!(
+                "xxsldwi {0}, {1}, {1}, 1",
+                out(vsreg) v_shift4,
+                in(vsreg) v_min
+            );
+            let v_min_final = power10_f32_min(v_min, v_shift4);
+
+            // 3. Extract and return
+            let res: [f32; 4] = std::mem::transmute(v_min_final);
+            res[0]
+        }
     }
 
     #[inline]
@@ -715,6 +973,15 @@ impl SIMD<f32, 16> for f32x16 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmin_s(self.0, rhs.0), lasx_xvfmin_s(self.1, rhs.1))
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                power10_f32_min(self.0, rhs.0),
+                power10_f32_min(self.1, rhs.1),
+                power10_f32_min(self.2, rhs.2),
+                power10_f32_min(self.3, rhs.3),
+            )
         }
     }
 
@@ -768,6 +1035,29 @@ impl SIMD<f32, 16> for f32x16 {
             }
             None
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            let tgt = vec_splats(val);
+            let masks = [
+                powerpc_f32_cmpeq(self.0, tgt),
+                powerpc_f32_cmpeq(self.1, tgt),
+                powerpc_f32_cmpeq(self.2, tgt),
+                powerpc_f32_cmpeq(self.3, tgt),
+            ];
+
+            for (i, mask) in masks.iter().enumerate() {
+                if vec_any_eq(*mask, vec_splats(0xFFFFFFFFu32 as u32)) {
+                    // Fallback to array check for the specific index within this vector
+                    let arr: [f32; 4] = transmute(*mask);
+                    for (j, &m_val) in arr.iter().enumerate() {
+                        if m_val.to_bits() != 0 {
+                            return Some((i * 4 + j) as i32);
+                        }
+                    }
+                }
+            }
+            None
+        }
     }
 }
 
@@ -794,6 +1084,13 @@ impl FloatSimd<f32, 16> for f32x16 {
         unsafe {
             self.0 = lasx_xvfmadd_s(a.0, b.0, self.0);
             self.1 = lasx_xvfmadd_s(a.1, b.1, self.1);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_madd(a.0, b.0, self.0);
+            self.1 = vec_madd(a.1, b.1, self.1);
+            self.2 = vec_madd(a.2, b.2, self.2);
+            self.3 = vec_madd(a.3, b.3, self.3);
         }
     }
 }
@@ -824,6 +1121,15 @@ impl Add for f32x16 {
         unsafe {
             Self(lasx_xvfadd_s(self.0, rhs.0), lasx_xvfadd_s(self.1, rhs.1))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_add(self.0, rhs.0),
+                vec_add(self.1, rhs.1),
+                vec_add(self.2, rhs.2),
+                vec_add(self.3, rhs.3),
+            )
+        }
     }
 }
 
@@ -850,6 +1156,13 @@ impl AddAssign for f32x16 {
         unsafe {
             self.0 = lasx_xvfadd_s(self.0, rhs.0);
             self.1 = lasx_xvfadd_s(self.1, rhs.1);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_add(self.0, rhs.0);
+            self.1 = vec_add(self.1, rhs.1);
+            self.2 = vec_add(self.2, rhs.2);
+            self.3 = vec_add(self.3, rhs.3);
         }
     }
 }
@@ -880,6 +1193,15 @@ impl Mul for f32x16 {
         unsafe {
             Self(lasx_xvfmul_s(self.0, rhs.0), lasx_xvfmul_s(self.1, rhs.1))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_mul(self.0, rhs.0),
+                vec_mul(self.1, rhs.1),
+                vec_mul(self.2, rhs.2),
+                vec_mul(self.3, rhs.3),
+            )
+        }
     }
 }
 
@@ -909,6 +1231,15 @@ impl Sub for f32x16 {
         unsafe {
             Self(lasx_xvfsub_s(self.0, rhs.0), lasx_xvfsub_s(self.1, rhs.1))
         }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            Self(
+                vec_sub(self.0, rhs.0),
+                vec_sub(self.1, rhs.1),
+                vec_sub(self.2, rhs.2),
+                vec_sub(self.3, rhs.3),
+            )
+        }
     }
 }
 
@@ -935,6 +1266,13 @@ impl SubAssign for f32x16 {
         unsafe {
             self.0 = lasx_xvfsub_s(self.0, rhs.0);
             self.1 = lasx_xvfsub_s(self.1, rhs.1);
+        }
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        unsafe {
+            self.0 = vec_sub(self.0, rhs.0);
+            self.1 = vec_sub(self.1, rhs.1);
+            self.2 = vec_sub(self.2, rhs.2);
+            self.3 = vec_sub(self.3, rhs.3);
         }
     }
 }

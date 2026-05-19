@@ -13,6 +13,8 @@ use std::arch::loongarch64::*;
 use std::arch::x86_64::*;
 #[cfg(target_arch = "loongarch64")]
 use std::mem::transmute;
+#[cfg(target_arch = "powerpc64")]
+use std::arch::powerpc64::*;
 use std::ops::{Add, AddAssign, Mul, Sub, SubAssign};
 
 use super::{FloatSimd, SIMD};
@@ -32,6 +34,84 @@ pub struct f64x4(float64x2x2_t);
 #[cfg(target_arch = "loongarch64")]
 #[derive(Clone, Copy)]
 pub struct f64x4(v4f64);
+
+#[allow(non_camel_case_types)]
+#[cfg(target_arch = "powerpc64")]
+#[derive(Clone, Copy)]
+pub struct f64x4(pub(crate) vector_double, pub(crate) vector_double);
+
+#[inline(always)]
+unsafe fn powerpc_f64_min(a: std::arch::powerpc64::vector_double, b: std::arch::powerpc64::vector_double) -> std::arch::powerpc64::vector_double {
+    let mut mask: std::arch::powerpc64::vector_double;
+    std::arch::asm!(
+        "xvcmpgtdp {0}, {1}, {2}",
+        out(vsreg) mask,
+        in(vsreg) b,
+        in(vsreg) a
+    );
+    // Use inline assembly for vsel to avoid broken standard library trait matching
+    let mut res: std::arch::powerpc64::vector_double;
+    std::arch::asm!(
+        "vsel {0}, {1}, {2}, {3}",
+        out(vsreg) res,
+        in(vsreg) b,
+        in(vsreg) a,
+        in(vsreg) mask
+    );
+    res
+}
+
+#[inline(always)]
+unsafe fn powerpc_f64_add(a: std::arch::powerpc64::vector_double, b: std::arch::powerpc64::vector_double) -> std::arch::powerpc64::vector_double {
+    let mut res: std::arch::powerpc64::vector_double;
+    std::arch::asm!(
+        "xvadddp {0}, {1}, {2}",
+        out(vsreg) res,
+        in(vsreg) a,
+        in(vsreg) b
+    );
+    res
+}
+
+#[inline(always)]
+unsafe fn powerpc_f64_madd(
+    a: std::arch::powerpc64::vector_double,
+    b: std::arch::powerpc64::vector_double,
+    c: std::arch::powerpc64::vector_double
+) -> std::arch::powerpc64::vector_double {
+    let mut res = c; // The target register acts as an accumulator source and destination
+    std::arch::asm!(
+        "xvmaddadp {0}, {1}, {2}",
+        inout(vsreg) res,
+        in(vsreg) a,
+        in(vsreg) b
+    );
+    res
+}
+
+#[inline(always)]
+unsafe fn powerpc_f64_sub(a: std::arch::powerpc64::vector_double, b: std::arch::powerpc64::vector_double) -> std::arch::powerpc64::vector_double {
+    let mut res: std::arch::powerpc64::vector_double;
+    std::arch::asm!(
+        "xvsubdp {0}, {1}, {2}",
+        out(vsreg) res,
+        in(vsreg) a,
+        in(vsreg) b
+    );
+    res
+}
+
+#[inline(always)]
+unsafe fn powerpc_f64_mul(a: std::arch::powerpc64::vector_double, b: std::arch::powerpc64::vector_double) -> std::arch::powerpc64::vector_double {
+    let mut res: std::arch::powerpc64::vector_double;
+    std::arch::asm!(
+        "xvmuldp {0}, {1}, {2}",
+        out(vsreg) res,
+        in(vsreg) a,
+        in(vsreg) b
+    );
+    res
+}
 
 impl std::fmt::Debug for f64x4 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -69,6 +149,14 @@ impl SIMD<f64, 4> for f64x4 {
         unsafe {
             Self(transmute(lasx_xvreplgr2vr_d(transmute(val))))
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            // Manually create an array containing the duplicated scalar
+            let splat_array: [f64; 2] = [val, val];
+            // Transmute the array directly into the underlying vector type
+            let v_f64 = std::mem::transmute(splat_array);
+            Self(v_f64, v_f64)
+        }
     }
 
     fn zeros() -> Self {
@@ -81,6 +169,10 @@ impl SIMD<f64, 4> for f64x4 {
             Self::splat(0.0)
         }
         #[cfg(target_arch = "loongarch64")]
+        {
+            Self::splat(0.0)
+        }
+        #[cfg(target_arch = "powerpc64")]
         {
             Self::splat(0.0)
         }
@@ -100,6 +192,10 @@ impl SIMD<f64, 4> for f64x4 {
         {
             Self(transmute(lasx_xvld::<0>(transmute(ptr))))
         }
+        #[cfg(target_arch = "powerpc64")]
+        {
+            Self::load_unaligned(ptr)
+        }
     }
 
     #[inline]
@@ -116,6 +212,18 @@ impl SIMD<f64, 4> for f64x4 {
         {
             Self(transmute(lasx_xvld::<0>(transmute(ptr))))
         }
+        #[cfg(target_arch = "powerpc64")]
+        {
+            unsafe {
+                // Cast the *const f64 to a pointer of the underlying vector register type
+                let vec_ptr = ptr as *const std::arch::powerpc64::vector_double;
+
+                Self(
+                    std::ptr::read_unaligned(vec_ptr),
+                    std::ptr::read_unaligned(vec_ptr.add(1)),
+                )
+            }
+        }
     }
 
     unsafe fn store(&self, ptr: *mut f64) {
@@ -131,6 +239,12 @@ impl SIMD<f64, 4> for f64x4 {
         unsafe {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *mut std::arch::powerpc64::vector_double;
+            std::ptr::write_unaligned(vec_ptr, self.0);      // Replaces vec_xst(self.0, 0, ptr);
+            std::ptr::write_unaligned(vec_ptr.add(1), self.1);
+        }
     }
 
     unsafe fn store_unaligned(&self, ptr: *mut f64) {
@@ -145,6 +259,12 @@ impl SIMD<f64, 4> for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *mut std::arch::powerpc64::vector_double;
+            std::ptr::write_unaligned(vec_ptr, self.0);      // Replaces vec_xst(self.0, 0, ptr);
+            std::ptr::write_unaligned(vec_ptr.add(1), self.1);
         }
     }
 
@@ -168,6 +288,12 @@ impl SIMD<f64, 4> for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         {
             self.as_array().iter().sum()
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let sum_vec = powerpc_f64_add(self.0, self.1);
+            let arr: [f64; 2] = std::mem::transmute(sum_vec);
+            arr[0] + arr[1]
         }
     }
 
@@ -194,6 +320,12 @@ impl SIMD<f64, 4> for f64x4 {
                 .copied()
                 .fold(f64::INFINITY, f64::min)
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let min_vec = powerpc_f64_min(self.0, self.1);
+            let arr: [f64; 2] = std::mem::transmute(min_vec);
+            f64::min(arr[0], arr[1])
+        }
     }
 
     fn min(&self, rhs: &Self) -> Self {
@@ -211,6 +343,10 @@ impl SIMD<f64, 4> for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmin_d(self.0, rhs.0))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(powerpc_f64_min(self.0, rhs.0), powerpc_f64_min(self.1, rhs.1))
         }
     }
 
@@ -241,6 +377,11 @@ impl FloatSimd<f64, 4> for f64x4 {
         unsafe {
             self.0 = lasx_xvfmadd_d(a.0, b.0, self.0);
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            self.0 = powerpc_f64_madd(a.0, b.0, self.0);
+            self.1 = powerpc_f64_madd(a.1, b.1, self.1);
+        }
     }
 }
 
@@ -264,6 +405,10 @@ impl Add for f64x4 {
         unsafe {
             Self(lasx_xvfadd_d(self.0, rhs.0))
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(powerpc_f64_add(self.0, rhs.0), powerpc_f64_add(self.1, rhs.1))
+        }
     }
 }
 
@@ -282,6 +427,11 @@ impl AddAssign for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             self.0 = lasx_xvfadd_d(self.0, rhs.0);
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+           self.0 = powerpc_f64_add(self.0, rhs.0);
+            self.1 = powerpc_f64_add(self.1, rhs.1);
         }
     }
 }
@@ -306,6 +456,10 @@ impl Sub for f64x4 {
         unsafe {
             Self(lasx_xvfsub_d(self.0, rhs.0))
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(powerpc_f64_sub(self.0, rhs.0), powerpc_f64_sub(self.1, rhs.1))
+        }
     }
 }
 
@@ -324,6 +478,11 @@ impl SubAssign for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             self.0 = lasx_xvfsub_d(self.0, rhs.0);
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            self.0 = powerpc_f64_sub(self.0, rhs.0);
+            self.1 = powerpc_f64_sub(self.1, rhs.1);
         }
     }
 }
@@ -347,6 +506,10 @@ impl Mul for f64x4 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmul_d(self.0, rhs.0))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(powerpc_f64_mul(self.0, rhs.0), powerpc_f64_mul(self.1, rhs.1))
         }
     }
 }
@@ -375,6 +538,16 @@ pub struct f64x8(float64x2x2_t, float64x2x2_t);
 #[cfg(target_arch = "loongarch64")]
 #[derive(Clone, Copy)]
 pub struct f64x8(v4f64, v4f64);
+
+#[allow(non_camel_case_types)]
+#[cfg(target_arch = "powerpc64")]
+#[derive(Clone, Copy)]
+pub struct f64x8(
+    pub(crate) vector_double,
+    pub(crate) vector_double,
+    pub(crate) vector_double,
+    pub(crate) vector_double
+);
 
 impl std::fmt::Debug for f64x8 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -419,6 +592,11 @@ impl SIMD<f64, 8> for f64x8 {
             let v = transmute(lasx_xvreplgr2vr_d(transmute(val)));
             Self(v, v)
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let v: std::arch::powerpc64::vector_double = std::mem::transmute([val, val]);
+            Self(v, v, v, v)
+        }
     }
 
     #[inline]
@@ -438,6 +616,11 @@ impl SIMD<f64, 8> for f64x8 {
         #[cfg(target_arch = "loongarch64")]
         {
             Self::splat(0.0)
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let v: std::arch::powerpc64::vector_double = std::mem::transmute([0.0f64, 0.0f64]);
+            Self(v, v, v, v)
         }
     }
 
@@ -460,6 +643,16 @@ impl SIMD<f64, 8> for f64x8 {
             Self(
                 transmute(lasx_xvld::<0>(transmute(ptr))),
                 transmute(lasx_xvld::<32>(transmute(ptr))),
+            )
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *const std::arch::powerpc64::vector_double;
+            Self(
+                std::ptr::read_unaligned(vec_ptr),
+                std::ptr::read_unaligned(vec_ptr.add(1)),
+                std::ptr::read_unaligned(vec_ptr.add(2)),
+                std::ptr::read_unaligned(vec_ptr.add(3)),
             )
         }
     }
@@ -485,6 +678,16 @@ impl SIMD<f64, 8> for f64x8 {
                 transmute(lasx_xvld::<32>(transmute(ptr))),
             )
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *const std::arch::powerpc64::vector_double;
+            Self(
+                std::ptr::read_unaligned(vec_ptr),
+                std::ptr::read_unaligned(vec_ptr.add(1)),
+                std::ptr::read_unaligned(vec_ptr.add(2)),
+                std::ptr::read_unaligned(vec_ptr.add(3)),
+            )
+        }
     }
 
     #[inline]
@@ -508,6 +711,14 @@ impl SIMD<f64, 8> for f64x8 {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
             lasx_xvst::<32>(transmute(self.1), transmute(ptr));
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *mut std::arch::powerpc64::vector_double;
+            std::ptr::write_unaligned(vec_ptr, self.0);
+            std::ptr::write_unaligned(vec_ptr.add(1), self.1);
+            std::ptr::write_unaligned(vec_ptr.add(2), self.2);
+            std::ptr::write_unaligned(vec_ptr.add(3), self.3);
+        }
     }
 
     #[inline]
@@ -530,6 +741,14 @@ impl SIMD<f64, 8> for f64x8 {
         {
             lasx_xvst::<0>(transmute(self.0), transmute(ptr));
             lasx_xvst::<32>(transmute(self.1), transmute(ptr));
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let vec_ptr = ptr as *mut std::arch::powerpc64::vector_double;
+            std::ptr::write_unaligned(vec_ptr, self.0);
+            std::ptr::write_unaligned(vec_ptr.add(1), self.1);
+            std::ptr::write_unaligned(vec_ptr.add(2), self.2);
+            std::ptr::write_unaligned(vec_ptr.add(3), self.3);
         }
     }
 
@@ -556,6 +775,14 @@ impl SIMD<f64, 8> for f64x8 {
         #[cfg(target_arch = "loongarch64")]
         {
             self.as_array().iter().sum()
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let s1 = powerpc_f64_add(self.0, self.1);
+            let s2 = powerpc_f64_add(self.2, self.3);
+            let sum_vec = powerpc_f64_add(s1, s2);
+            let arr: [f64; 2] = std::mem::transmute(sum_vec);
+            arr[0] + arr[1]
         }
     }
 
@@ -588,6 +815,14 @@ impl SIMD<f64, 8> for f64x8 {
                 .copied()
                 .fold(f64::INFINITY, f64::min)
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            let m1 = powerpc_f64_min(self.0, self.1);
+            let m2 = powerpc_f64_min(self.2, self.3);
+            let min_vec = powerpc_f64_min(m1, m2);
+            let arr: [f64; 2] = std::mem::transmute(min_vec);
+            f64::min(arr[0], arr[1])
+        }
     }
 
     #[inline]
@@ -610,6 +845,15 @@ impl SIMD<f64, 8> for f64x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmin_d(self.0, rhs.0), lasx_xvfmin_d(self.1, rhs.1))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(
+                powerpc_f64_min(self.0, rhs.0),
+                powerpc_f64_min(self.1, rhs.1),
+                powerpc_f64_min(self.2, rhs.2),
+                powerpc_f64_min(self.3, rhs.3),
+            )
         }
     }
 
@@ -649,6 +893,13 @@ impl FloatSimd<f64, 8> for f64x8 {
             self.0 = lasx_xvfmadd_d(a.0, b.0, self.0);
             self.1 = lasx_xvfmadd_d(a.1, b.1, self.1);
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            self.0 = powerpc_f64_madd(a.0, b.0, self.0);
+            self.1 = powerpc_f64_madd(a.1, b.1, self.1);
+            self.2 = powerpc_f64_madd(a.2, b.2, self.2);
+            self.3 = powerpc_f64_madd(a.3, b.3, self.3);
+        }
     }
 }
 
@@ -675,6 +926,15 @@ impl Add for f64x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfadd_d(self.0, rhs.0), lasx_xvfadd_d(self.1, rhs.1))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(
+                powerpc_f64_add(self.0, rhs.0),
+                powerpc_f64_add(self.1, rhs.1),
+                powerpc_f64_add(self.2, rhs.2),
+                powerpc_f64_add(self.3, rhs.3),
+            )
         }
     }
 }
@@ -703,6 +963,13 @@ impl AddAssign for f64x8 {
             self.0 = lasx_xvfadd_d(self.0, rhs.0);
             self.1 = lasx_xvfadd_d(self.1, rhs.1);
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            self.0 = powerpc_f64_add(self.0, rhs.0);
+            self.1 = powerpc_f64_add(self.1, rhs.1);
+            self.2 = powerpc_f64_add(self.2, rhs.2);
+            self.3 = powerpc_f64_add(self.3, rhs.3);
+        }
     }
 }
 
@@ -729,6 +996,15 @@ impl Mul for f64x8 {
         #[cfg(target_arch = "loongarch64")]
         unsafe {
             Self(lasx_xvfmul_d(self.0, rhs.0), lasx_xvfmul_d(self.1, rhs.1))
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(
+                powerpc_f64_mul(self.0, rhs.0),
+                powerpc_f64_mul(self.1, rhs.1),
+                powerpc_f64_mul(self.2, rhs.2),
+                powerpc_f64_mul(self.3, rhs.3),
+            )
         }
     }
 }
@@ -757,6 +1033,15 @@ impl Sub for f64x8 {
         unsafe {
             Self(lasx_xvfsub_d(self.0, rhs.0), lasx_xvfsub_d(self.1, rhs.1))
         }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            Self(
+                powerpc_f64_sub(self.0, rhs.0),
+                powerpc_f64_sub(self.1, rhs.1),
+                powerpc_f64_sub(self.2, rhs.2),
+                powerpc_f64_sub(self.3, rhs.3),
+            )
+        }
     }
 }
 
@@ -783,6 +1068,13 @@ impl SubAssign for f64x8 {
         unsafe {
             self.0 = lasx_xvfsub_d(self.0, rhs.0);
             self.1 = lasx_xvfsub_d(self.1, rhs.1);
+        }
+        #[cfg(target_arch = "powerpc64")]
+        unsafe {
+            self.0 = powerpc_f64_sub(self.0, rhs.0);
+            self.1 = powerpc_f64_sub(self.1, rhs.1);
+            self.2 = powerpc_f64_sub(self.2, rhs.2);
+            self.3 = powerpc_f64_sub(self.3, rhs.3);
         }
     }
 }

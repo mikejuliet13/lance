@@ -16,7 +16,7 @@ fn main() -> Result<(), String> {
     }
 
     // Let clippy know about our custom cfg attribute
-    println!("cargo::rustc-check-cfg=cfg(kernel_support, values(\"avx512\"))");
+    println!("cargo::rustc-check-cfg=cfg(kernel_support, values(\"avx512\", \"vsx\"))");
 
     println!("cargo:rerun-if-changed=src/simd/f16.c");
     println!("cargo:rerun-if-changed=src/simd/bf16.c");
@@ -106,6 +106,20 @@ fn main() -> Result<(), String> {
         build_f16_with_flags("lasx", &["-mlasx"]).unwrap();
         build_bf16_with_flags("lsx", &["-mlsx"]).unwrap();
         build_bf16_with_flags("lasx", &["-mlasx"]).unwrap();
+    } else if target_arch == "powerpc64" || target_arch == "powerpc" {
+        // Build a version with VSX
+        // For Power12, we can use -mcpu=power12, but -mvsx is the baseline for VSX kernels.
+        if let Err(err) = build_f16_with_flags("vsx", &["-mvsx", "-maltivec"]) {
+             println!("cargo:warning=Skipping build of VSX f16 kernels. Error: {}", err);
+        } else {
+             println!("cargo:rustc-cfg=kernel_support=\"vsx\"");
+        }
+
+        if let Err(err) = build_bf16_with_flags("vsx", &["-mvsx", "-maltivec"]) {
+             println!("cargo:warning=Skipping build of VSX bf16 kernels. Error: {}", err);
+        } else {
+             println!("cargo:rustc-cfg=kernel_support=\"vsx\"");
+        }
     } else {
         // Only error if fp16kernels was explicitly requested on unsupported platform.
         // This allows builds on iOS, Android, etc. when the feature is disabled.
@@ -113,7 +127,7 @@ fn main() -> Result<(), String> {
         // Note: We use CARGO_FEATURE_* env var instead of cfg!() because cfg!()
         // checks the build script's features, not the library's features.
         if env::var("CARGO_FEATURE_FP16KERNELS").is_ok() {
-            return Err("Unable to build f16 kernels on given target_arch.  Please use x86_64 or aarch64 or remove the fp16kernels feature".to_string());
+            return Err("Unable to build f16 kernels on given target_arch.  Please use x86_64 or aarch64 or  powerpc64 or remove the fp16kernels feature".to_string());
         }
     }
     Ok(())

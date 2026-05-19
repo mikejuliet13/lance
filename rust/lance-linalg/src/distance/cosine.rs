@@ -97,6 +97,10 @@ mod bf16_kernel {
         #[cfg(target_arch = "loongarch64")]
         pub fn cosine_bf16_lasx(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32)
         -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn cosine_bf16_altivec(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn cosine_bf16_vsx(x: *const bf16, x_norm: f32, y: *const bf16, dimension: u32) -> f32;
     }
 }
 
@@ -127,6 +131,14 @@ impl Cosine for bf16 {
             SimdSupport::Lsx => unsafe {
                 bf16_kernel::cosine_bf16_lsx(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
             },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                bf16_kernel::cosine_bf16_vsx(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                bf16_kernel::cosine_bf16_altivec(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
+            },
             _ => cosine_scalar(x, x_norm, y),
         }
     }
@@ -149,6 +161,10 @@ mod kernel {
         pub fn cosine_f16_lsx(x: *const f16, x_norm: f32, y: *const f16, dimension: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
         pub fn cosine_f16_lasx(x: *const f16, x_norm: f32, y: *const f16, dimension: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn cosine_f16_altivec(x: *const f16, x_norm: f32, y: *const f16, dimension: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn cosine_f16_vsx(x: *const f16, x_norm: f32, y: *const f16, dimension: u32) -> f32;
     }
 }
 
@@ -178,6 +194,14 @@ impl Cosine for f16 {
             #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
             SimdSupport::Lsx => unsafe {
                 kernel::cosine_f16_lsx(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                kernel::cosine_f16_vsx(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                kernel::cosine_f16_altivec(x.as_ptr(), x_norm, y.as_ptr(), y.len() as u32)
             },
             _ => cosine_scalar(x, x_norm, y),
         }

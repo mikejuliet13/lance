@@ -14,6 +14,8 @@ pub enum SimdSupport {
     Avx512FP16,
     Lsx,
     Lasx,
+    AltiVec,
+    Vsx,
 }
 
 /// Support for SIMD operations
@@ -57,6 +59,20 @@ pub static SIMD_SUPPORT: LazyLock<SimdSupport> = LazyLock::new(|| {
         } else {
             SimdSupport::None
         }
+    }
+    #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+    {
+        if powerpc::has_vsx_support() {
+            SimdSupport::Vsx
+        } else if powerpc::has_altivec_support() {
+            SimdSupport::AltiVec
+        } else {
+            SimdSupport::None
+        }
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "loongarch64", target_arch = "powerpc64", target_arch = "powerpc")))]
+    {
+        SimdSupport::None
     }
 });
 
@@ -129,6 +145,21 @@ mod loongarch64 {
         // See: https://github.com/rust-lang/libc/blob/7ce81ca7aeb56aae7ca0237ef9353d58f3d7d2f1/src/unix/linux_like/linux/gnu/b64/loongarch64/mod.rs#L264
         let flags = unsafe { libc::getauxval(libc::AT_HWCAP) };
         flags & libc::HWCAP_LOONGARCH_LASX != 0
+    }
+}
+#[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+mod powerpc {
+    pub fn has_altivec_support() -> bool {
+        // PPC_FEATURE_HAS_ALTIVEC is 0x10000000
+        let flags = unsafe { libc::getauxval(libc::AT_HWCAP) };
+        (flags & 0x10000000) != 0
+    }
+
+    pub fn has_vsx_support() -> bool {
+        // PPC_FEATURE2_HAS_VSX is 0x00000080. Note: sometimes VSX is in HWCAP2
+        // We check HWCAP first for standard VSX support
+        let flags = unsafe { libc::getauxval(libc::AT_HWCAP) };
+        (flags & 0x00000080) != 0
     }
 }
 

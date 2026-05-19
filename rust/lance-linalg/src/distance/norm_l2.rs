@@ -37,6 +37,10 @@ mod kernel {
         pub fn norm_l2_f16_lsx(ptr: *const f16, len: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
         pub fn norm_l2_f16_lasx(ptr: *const f16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn norm_l2_f16_altivec(ptr: *const f16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn norm_l2_f16_vsx(ptr: *const f16, len: u32) -> f32;
     }
 }
 
@@ -75,6 +79,14 @@ impl Normalize for f16 {
             SimdSupport::Lsx => unsafe {
                 kernel::norm_l2_f16_lsx(vector.as_ptr(), vector.len() as u32)
             },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                kernel::norm_l2_f16_vsx(vector.as_ptr(), vector.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                kernel::norm_l2_f16_altivec(vector.as_ptr(), vector.len() as u32)
+            },
             _ => norm_l2_impl::<Self, f32, 32>(vector),
         }
     }
@@ -95,6 +107,10 @@ mod bf16_kernel {
         pub fn norm_l2_bf16_lsx(ptr: *const bf16, len: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
         pub fn norm_l2_bf16_lasx(ptr: *const bf16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn norm_l2_bf16_altivec(ptr: *const bf16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn norm_l2_bf16_vsx(ptr: *const bf16, len: u32) -> f32;
     }
 }
 
@@ -125,6 +141,14 @@ impl Normalize for bf16 {
             #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
             SimdSupport::Lsx => unsafe {
                 bf16_kernel::norm_l2_bf16_lsx(vector.as_ptr(), vector.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                bf16_kernel::norm_l2_bf16_vsx(vector.as_ptr(), vector.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                bf16_kernel::norm_l2_bf16_altivec(vector.as_ptr(), vector.len() as u32)
             },
             _ => norm_l2_impl::<Self, f32, 32>(vector),
         }

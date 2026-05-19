@@ -5,6 +5,7 @@
 
 #![deny(clippy::unused_async)]
 #![cfg_attr(target_arch = "loongarch64", feature(stdarch_loongarch))]
+#![cfg_attr(any(target_arch = "powerpc64", target_arch = "powerpc"), feature(stdarch_powerpc, powerpc_target_feature))]
 
 use arrow_schema::ArrowError;
 

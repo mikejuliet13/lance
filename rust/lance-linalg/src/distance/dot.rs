@@ -92,6 +92,10 @@ mod bf16_kernel {
         pub fn dot_bf16_lsx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
         pub fn dot_bf16_lasx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn dot_bf16_altivec(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn dot_bf16_vsx(ptr1: *const bf16, ptr2: *const bf16, len: u32) -> f32;
     }
 }
 
@@ -123,6 +127,14 @@ impl Dot for bf16 {
             SimdSupport::Lsx => unsafe {
                 bf16_kernel::dot_bf16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
             },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                bf16_kernel::dot_bf16_vsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                bf16_kernel::dot_bf16_altivec(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
             _ => dot_scalar::<Self, f32, 32>(x, y),
         }
     }
@@ -145,6 +157,10 @@ mod kernel {
         pub fn dot_f16_lsx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
         #[cfg(target_arch = "loongarch64")]
         pub fn dot_f16_lasx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn dot_f16_altivec(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
+        #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
+        pub fn dot_f16_vsx(ptr1: *const f16, ptr2: *const f16, len: u32) -> f32;
     }
 }
 
@@ -175,6 +191,14 @@ impl Dot for f16 {
             #[cfg(all(feature = "fp16kernels", target_arch = "loongarch64"))]
             SimdSupport::Lsx => unsafe {
                 kernel::dot_f16_lsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::Vsx => unsafe {
+                kernel::dot_f16_vsx(x.as_ptr(), y.as_ptr(), x.len() as u32)
+            },
+            #[cfg(all(feature = "fp16kernels", any(target_arch = "powerpc64", target_arch = "powerpc")))]
+            SimdSupport::AltiVec => unsafe {
+                kernel::dot_f16_altivec(x.as_ptr(), y.as_ptr(), x.len() as u32)
             },
             _ => dot_scalar::<Self, f32, 32>(x, y),
         }

@@ -6,7 +6,7 @@
 //! This module provides distance metrics for vectors.
 //!
 //! - `bf16, f16, f32, f64` types are supported.
-//! - SIMD is used when available, on `x86_64`, `aarch64` and `loongarch64`
+//! - SIMD is used when available, on `x86_64`, `aarch64`, `loongarch64` and `powerpc64`
 //!   architectures.
 
 use std::sync::Arc;
