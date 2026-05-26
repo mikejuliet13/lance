@@ -49,14 +49,14 @@ unsafe fn powerpc_f64_min(a: std::arch::powerpc64::vector_double, b: std::arch::
         in(vsreg) b,
         in(vsreg) a
     );
-    // Use inline assembly for vsel to avoid broken standard library trait matching
+
     let mut res: std::arch::powerpc64::vector_double;
     std::arch::asm!(
         "vsel {0}, {1}, {2}, {3}",
-        out(vsreg) res,
-        in(vsreg) b,
-        in(vsreg) a,
-        in(vsreg) mask
+        out(vreg) res,
+        in(vreg) b,
+        in(vreg) a,
+        in(vreg) mask
     );
     res
 }
@@ -71,6 +71,21 @@ unsafe fn powerpc_f64_add(a: std::arch::powerpc64::vector_double, b: std::arch::
         in(vsreg) b
     );
     res
+}
+
+#[cfg(target_arch = "powerpc64")]
+#[inline(always)]
+fn splat_f64_powerpc(val: f64) -> std::arch::powerpc64::vector_double {
+    unsafe {
+        // Create a local structure that explicitly forces 16-byte alignment
+        #[repr(align(16))]
+        struct AlignedArray([f64; 2]);
+
+        let aligned_arr = AlignedArray([val, val]);
+
+        // Now this pointer is guaranteed to be 16-byte aligned
+        std::ptr::read_volatile(aligned_arr.0.as_ptr() as *const std::arch::powerpc64::vector_double)
+    }
 }
 
 #[inline(always)]
@@ -151,10 +166,7 @@ impl SIMD<f64, 4> for f64x4 {
         }
         #[cfg(target_arch = "powerpc64")]
         unsafe {
-            // Manually create an array containing the duplicated scalar
-            let splat_array: [f64; 2] = [val, val];
-            // Transmute the array directly into the underlying vector type
-            let v_f64 = std::mem::transmute(splat_array);
+            let v_f64 = splat_f64_powerpc(val);
             Self(v_f64, v_f64)
         }
     }
@@ -321,10 +333,11 @@ impl SIMD<f64, 4> for f64x4 {
                 .fold(f64::INFINITY, f64::min)
         }
         #[cfg(target_arch = "powerpc64")]
-        unsafe {
-            let min_vec = powerpc_f64_min(self.0, self.1);
-            let arr: [f64; 2] = std::mem::transmute(min_vec);
-            f64::min(arr[0], arr[1])
+        {
+            self.as_array()
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min)
         }
     }
 
@@ -594,7 +607,7 @@ impl SIMD<f64, 8> for f64x8 {
         }
         #[cfg(target_arch = "powerpc64")]
         unsafe {
-            let v: std::arch::powerpc64::vector_double = std::mem::transmute([val, val]);
+            let v = splat_f64_powerpc(val);
             Self(v, v, v, v)
         }
     }
@@ -618,9 +631,8 @@ impl SIMD<f64, 8> for f64x8 {
             Self::splat(0.0)
         }
         #[cfg(target_arch = "powerpc64")]
-        unsafe {
-            let v: std::arch::powerpc64::vector_double = std::mem::transmute([0.0f64, 0.0f64]);
-            Self(v, v, v, v)
+        {
+            Self::splat(0.0)
         }
     }
 
@@ -816,12 +828,11 @@ impl SIMD<f64, 8> for f64x8 {
                 .fold(f64::INFINITY, f64::min)
         }
         #[cfg(target_arch = "powerpc64")]
-        unsafe {
-            let m1 = powerpc_f64_min(self.0, self.1);
-            let m2 = powerpc_f64_min(self.2, self.3);
-            let min_vec = powerpc_f64_min(m1, m2);
-            let arr: [f64; 2] = std::mem::transmute(min_vec);
-            f64::min(arr[0], arr[1])
+        {
+            self.as_array()
+                .iter()
+                .copied()
+                .fold(f64::INFINITY, f64::min)
         }
     }
 

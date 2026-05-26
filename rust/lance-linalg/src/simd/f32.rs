@@ -301,12 +301,8 @@ impl SIMD<f32, 8> for f32x8 {
             self.as_array().iter().sum()
         }
         #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
-        unsafe {
-            let sum_vec = vec_add(self.0, self.1);
-            // Horizontal add across the 4 lanes of the resulting vector
-            let mut res = [0.0f32; 4];
-            vec_xst(sum_vec, 0, res.as_mut_ptr());
-            res.iter().sum()
+        {
+            self.as_array().iter().sum()
         }
     }
 
@@ -860,29 +856,8 @@ impl SIMD<f32, 16> for f32x16 {
             self.as_array().iter().sum()
         }
         #[cfg(any(target_arch = "powerpc64", target_arch = "powerpc"))]
-        unsafe {
-            // 1. Sum the two internal vectors of f32x8
-            let sum = vec_add(self.0, self.1);
-            // 2. Horizontal add of the 4 lanes in the resulting vector
-            let mut shift8: vector_float;
-            std::arch::asm!(
-                "xxsldwi {0}, {1}, {1}, 2",
-                out(vsreg) shift8,
-                in(vsreg) sum
-            );
-            let v_sum = vec_add(sum, shift8);
-
-            let mut shift4: vector_float;
-            std::arch::asm!(
-                "xxsldwi {0}, {1}, {1}, 1",
-                out(vsreg) shift4,
-                in(vsreg) v_sum
-            );
-            let v_sum_final = vec_add(v_sum, shift4);
-
-            // 3. Extract the first lane (the total sum)
-            let res: [f32; 4] = std::mem::transmute(v_sum_final);
-            res[0]
+        {
+            self.as_array().iter().sum()
         }
     }
 
